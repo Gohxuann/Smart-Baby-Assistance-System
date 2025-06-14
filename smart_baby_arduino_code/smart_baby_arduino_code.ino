@@ -6,6 +6,7 @@
 #include <DHT.h>
 #include "addons/TokenHelper.h"
 #include "addons/RTDBHelper.h"
+#include <time.h>
 
 // OLED setup
 #define SCREEN_WIDTH 128
@@ -23,7 +24,12 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #define RELAY_PIN 25
 
 // WiFi and Firebase credentials
-
+#define API_KEY ""
+#define DATABASE_URL ""
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
+#define USER_EMAIL ""
+#define USER_PASSWORD ""
 
 // Firebase objects
 FirebaseData fbdo;
@@ -36,10 +42,17 @@ DHT dht(DHTPIN, DHTTYPE);
 int motionCount = 0;
 int vibCount = 0;
 unsigned long countTimer = 0;
-const int countWindow = 60000;
 float hum = 0, temp = 0;
 unsigned long lastActiveTime = 0;
+unsigned long awakeStartTime = 0;
 bool babyAwake = false;
+String lastActiveTimestamp = "";
+unsigned long tooNearStartTime = 0;
+bool dangerNear = false;
+String controlMode = "auto";
+String manualRelayState = "OFF";
+
+
 
 void setup() {
   Serial.begin(115200);
@@ -87,6 +100,8 @@ void setup() {
   display.println("IP: " + WiFi.localIP().toString());
   display.display();
 
+  configTime(28800, 0, "pool.ntp.org");
+
   dht.begin();
   initFirebase();
 }
@@ -116,16 +131,25 @@ void runSensorLogic() {
     if (motion || vibrate) {
       motionCount++;
       vibCount++;
-      lastActiveTime = millis();  // Reset idle timer
+      lastActiveTime = millis();
+
+      time_t now = time(nullptr);
+      struct tm* t = localtime(&now);
+      char buf[9];
+      sprintf(buf, "%02d:%02d:%02d", t->tm_hour, t->tm_min, t->tm_sec);
+      lastActiveTimestamp = String(buf);
+
+      if (!babyAwake) {
+        awakeStartTime = millis();
+      }
     }
   }
 
-  // Determine if baby is awake or sleeping
   if (!babyAwake && (motionCount + vibCount >= 5)) {
     babyAwake = true;
   }
 
-  if (babyAwake && millis() - lastActiveTime > 5000) {  // 5s no movement
+  if (babyAwake && millis() - lastActiveTime > 5000) {
     babyAwake = false;
     motionCount = 0;
     vibCount = 0;
@@ -141,45 +165,84 @@ void runSensorLogic() {
   //   digitalWrite(RELAY_PIN, HIGH); // turn off relay or fan
   // }
 
-  if (wakeStatus == "Baby Wakeup!" || nearStatus == "Too near!"){
-    digitalWrite(RELAY_PIN, LOW);
-  } else {
-    digitalWrite(RELAY_PIN, HIGH);
+  unsigned long awakeDurationSec = 0;
+  if (babyAwake) {
+    awakeDurationSec = (millis() - awakeStartTime) / 1000;
   }
 
-  // Serial Monitor output
+  bool longAwake = (babyAwake && awakeDurationSec >= 10);
+  if (dist < 10 && dist > 0) {
+    if (tooNearStartTime == 0) {
+      tooNearStartTime = millis();
+    }
+    if (millis() - tooNearStartTime >= 5000) {
+      dangerNear = true;
+    }
+  } else {
+    tooNearStartTime = 0;
+    dangerNear = false;
+  }
+
+  // Get Firebase controlMode and manual relay state
+  Firebase.RTDB.getString(&fbdo, firebasePath + "/mode", &controlMode);
+  Firebase.RTDB.getString(&fbdo, firebasePath + "/manual_relay", &manualRelayState);
+  if (controlMode == "") controlMode = "auto";
+  if (manualRelayState == "") manualRelayState = "OFF";
+
+  if (controlMode == "manual") {
+    if (manualRelayState == "ON") {
+      digitalWrite(RELAY_PIN, LOW);
+    } else {
+      digitalWrite(RELAY_PIN, HIGH);
+    }
+  } else {
+    if (longAwake || dangerNear) {
+      digitalWrite(RELAY_PIN, LOW);
+    } else {
+      digitalWrite(RELAY_PIN, HIGH);
+    }
+  }
+
+  String relayStatus = (digitalRead(RELAY_PIN) == LOW) ? "ON" : "OFF";
+
   Serial.println("========== SENSOR STATUS ==========");
   Serial.println("Temp: " + String(temp) + " °C");
   Serial.println("Humidity: " + String(hum) + " %");
   Serial.println("Distance: " + String(dist) + " cm");
-
-  Serial.println("===================================");
-
   Serial.println("Motion: " + String(motion ? "YES" : "NO"));
   Serial.println("Vibration: " + String(vibrate ? "YES" : "NO"));
-  Serial.println("Distance: " + String(dist) + " cm");
-
-  Serial.println("===================================");
-
+  Serial.println("======================================");
   Serial.println("Status: " + wakeStatus);
   Serial.println("Safety: " + nearStatus);
+  Serial.println("======================================");
+  Serial.println("Last Active: " + lastActiveTimestamp);
+  Serial.println("Awake Duration: " + String(awakeDurationSec) + "s");
+  Serial.println("Too Near Triggered: " + String(dangerNear ? "YES" : "NO"));
+  Serial.println("Control Mode: " + controlMode);
+  Serial.println("Manual Relay: " + manualRelayState);
+  Serial.println("Relay Status: " + relayStatus);
 
-  // OLED Page 1
+  // OLED display
   display.clearDisplay();
   display.setCursor(0, 0);
-  display.println("Temp: " + String(temp) + " C");
-  //display.println("Hum: " + String(hum) + " %");
-  display.println("Dist: " + String(dist) + "cm");
+  display.println("Tem:" + String(temp) + ",Dis:" + String(dist));
+  display.println("Alarm: " + relayStatus);
   display.println("Status: " + wakeStatus);
   display.println("Safety: " + nearStatus);
   display.display();
 
   // Firebase upload
   Firebase.RTDB.setFloat(&fbdo, firebasePath + "/temp", temp);
-  Firebase.RTDB.setFloat(&fbdo, firebasePath + "/hum", hum);         // ADD this
-  Firebase.RTDB.setFloat(&fbdo, firebasePath + "/dist", dist);       // ADD this
+  Firebase.RTDB.setFloat(&fbdo, firebasePath + "/hum", hum);
+  Firebase.RTDB.setFloat(&fbdo, firebasePath + "/dist", dist);
   Firebase.RTDB.setString(&fbdo, firebasePath + "/status", wakeStatus);
   Firebase.RTDB.setString(&fbdo, firebasePath + "/safety", nearStatus);
+  Firebase.RTDB.setString(&fbdo, firebasePath + "/motion", motion);
+  Firebase.RTDB.setString(&fbdo, firebasePath + "/vibrate", vibrate);
+  Firebase.RTDB.setString(&fbdo, firebasePath + "/dangerNear", dangerNear);
+  Firebase.RTDB.setString(&fbdo, firebasePath + "/last_active", lastActiveTimestamp);
+  Firebase.RTDB.setInt(&fbdo, firebasePath + "/awake_duration_sec", awakeDurationSec);
+  Firebase.RTDB.setString(&fbdo, firebasePath + "/relay", relayStatus);
 
   delay(3000);
 }

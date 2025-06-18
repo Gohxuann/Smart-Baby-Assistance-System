@@ -4,6 +4,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:lottie/lottie.dart';
 import 'login_screen.dart';
+import 'package:smart_baby_web/screens/trends_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -28,30 +29,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String motion = 'Loading...';
   String vibration = 'Loading...';
   String dangerNear = 'Loading...';
+  double distanceThreshold = 10.0;
 
   @override
   void initState() {
     super.initState();
-    _dbRef.onValue.listen((event) {
-      final data = event.snapshot.value as Map?;
-      if (data != null) {
-        setState(() {
-          temp = data['temp']?.toStringAsFixed(1) ?? '0.0';
-          hum = data['hum']?.toStringAsFixed(1) ?? '0.0';
-          dist = data['dist']?.toStringAsFixed(1) ?? '0.0';
-          status = data['status'] ?? 'Unknown';
-          safety = data['safety'] ?? 'Unknown';
-          lastActive = data['last_active'] ?? 'N/A';
-          awakeDuration = '${data['awake_duration_sec'] ?? 0}s';
-          relay = data['relay'] ?? 'Unknown';
-          mode = data['mode'] ?? 'auto';
-          manualRelay = data['manual_relay'] ?? 'OFF';
-          motion = data['motion'] ?? 'Unknown';
-          vibration = data['vibrate'] ?? 'Unknown';
-          dangerNear = data['dangerNear'] ?? 'Unknown';
-        });
-      }
-    });
+    if (FirebaseAuth.instance.currentUser != null) {
+      _dbRef.onValue.listen((event) {
+        //print("RAW SNAPSHOT: ${event.snapshot.value}");
+        final raw = event.snapshot.value;
+        if (raw is Map) {
+          final data = raw;
+          setState(() {
+            temp = data['temp']?.toStringAsFixed(1) ?? '0.0';
+            hum = data['hum']?.toStringAsFixed(1) ?? '0.0';
+            dist = data['dist']?.toStringAsFixed(1) ?? '0.0';
+            status = data['status'] ?? 'Unknown';
+            safety = data['safety'] ?? 'Unknown';
+            lastActive = data['last_active'] ?? 'N/A';
+            awakeDuration = '${data['awake_duration_sec'] ?? 0}s';
+            relay = data['relay'] ?? 'Unknown';
+            mode = data['mode'] ?? 'auto';
+            manualRelay = data['manual_relay'] ?? 'OFF';
+            motion = data['motion'] ?? 'Unknown';
+            vibration = data['vibrate'] ?? 'Unknown';
+            dangerNear = data['dangerNear'] ?? 'Unknown';
+            distanceThreshold =
+                double.tryParse(data['distance_threshold']?.toString() ?? '') ??
+                    10.0;
+          });
+        } else {
+          //print("Unexpected data format received from Firebase.");
+        }
+      });
+    }
   }
 
   void logout() async {
@@ -108,6 +119,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final currentUser = FirebaseAuth.instance.currentUser;
     return Scaffold(
       backgroundColor: const Color(0xFFB3E5FC),
       appBar: AppBar(
@@ -121,6 +133,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
             onPressed: logout,
             icon: const Icon(Icons.logout),
           ),
+          IconButton(
+            icon: const Icon(Icons.trending_up),
+            tooltip: 'View Trends',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const TrendsScreen()),
+            ),
+          )
         ],
       ),
       body: SingleChildScrollView(
@@ -132,10 +152,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 10),
               const Text("Smart Baby Assistance System",
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text(
+                'Logged in as: ${currentUser?.email ?? 'Unknown'}',
+                style: const TextStyle(fontSize: 12, color: Colors.black54),
+              ),
               const SizedBox(height: 10),
               SizedBox(
-                height: 120,
-                width: 120,
+                height: 250,
+                width: 250,
                 child: Lottie.asset('assets/lottie/baby.json'),
               ),
               const SizedBox(height: 16),
@@ -183,6 +208,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
               _buildGlassCard("🛠️ Parent Control Panel", [
                 _buildInfoCard("🚨 Alarm", relay,
                     relay == "ON" ? Colors.red : Colors.green),
+                _buildInfoCard("📏 Distance Threshold",
+                    "${distanceThreshold.toStringAsFixed(1)} cm", Colors.teal),
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    activeTrackColor: Colors.teal,
+                    inactiveTrackColor: Colors.teal.shade100,
+                    thumbColor: Colors.teal,
+                    overlayColor: Colors.teal.withAlpha(32),
+                  ),
+                  child: Slider(
+                    value: distanceThreshold,
+                    min: 5,
+                    max: 50,
+                    divisions: 45,
+                    label: "${distanceThreshold.toStringAsFixed(1)} cm",
+                    onChanged: (value) {
+                      setState(() {
+                        distanceThreshold = value;
+                      });
+                    },
+                    onChangeEnd: (value) {
+                      _dbRef.update({'distance_threshold': value});
+                    },
+                  ),
+                ),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [

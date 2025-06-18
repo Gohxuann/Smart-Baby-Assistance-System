@@ -1,12 +1,13 @@
 #include <WiFi.h>
 #include <Firebase_ESP_Client.h>
-#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <DHT.h>
 #include "addons/TokenHelper.h"
 #include "addons/RTDBHelper.h"
 #include <time.h>
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
 
 // OLED setup
 #define SCREEN_WIDTH 128
@@ -30,6 +31,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #define WIFI_PASSWORD ""
 #define USER_EMAIL ""
 #define USER_PASSWORD ""
+String serverName = "";
 
 // Firebase objects
 FirebaseData fbdo;
@@ -48,11 +50,11 @@ unsigned long awakeStartTime = 0;
 bool babyAwake = false;
 String lastActiveTimestamp = "";
 unsigned long tooNearStartTime = 0;
+unsigned long safeStartTime = 0;
 bool dangerNear = false;
+float distanceThreshold = 10.0;
 String controlMode = "auto";
 String manualRelayState = "OFF";
-
-
 
 void setup() {
   Serial.begin(115200);
@@ -64,9 +66,9 @@ void setup() {
   digitalWrite(RELAY_PIN, LOW);
 
   // Initialize OLED display
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Default I2C address 0x3C
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("SSD1306 allocation failed"));
-    while (true); // Stop here if OLED is not found
+    while (true);
   }
 
   display.clearDisplay();
@@ -126,6 +128,9 @@ void runSensorLogic() {
     return;
   }
 
+  Firebase.RTDB.getFloat(&fbdo, firebasePath + "/distance_threshold", &distanceThreshold);
+  if (distanceThreshold <= 0) distanceThreshold = 10.0;
+
   if (millis() - countTimer > 5000) {
     countTimer = millis();
     if (motion || vibrate) {
@@ -156,7 +161,23 @@ void runSensorLogic() {
   }
 
   String wakeStatus = babyAwake ? "Baby Wakeup!" : "Baby Sleeping";
-  String nearStatus = (dist < 10 && dist > 0) ? "Too near!" : "Safe";
+
+   // Distance-based alarm logic
+  if (dist > 0 && dist < distanceThreshold) {
+    if (tooNearStartTime == 0) tooNearStartTime = millis();
+    safeStartTime = 0;
+    if (millis() - tooNearStartTime >= 5000) {
+      dangerNear = true;
+    }
+  } else if (dist >= distanceThreshold) {
+    if (safeStartTime == 0) safeStartTime = millis();
+    if (millis() - safeStartTime >= 3000) {
+      dangerNear = false;
+      tooNearStartTime = 0;
+    }
+  }
+
+  String nearStatus = dangerNear ? "Too near!" : "Safe";
 
   // Fan logic
   // if (temp > 22.2) {
@@ -171,17 +192,6 @@ void runSensorLogic() {
   }
 
   bool longAwake = (babyAwake && awakeDurationSec >= 10);
-  if (dist < 10 && dist > 0) {
-    if (tooNearStartTime == 0) {
-      tooNearStartTime = millis();
-    }
-    if (millis() - tooNearStartTime >= 5000) {
-      dangerNear = true;
-    }
-  } else {
-    tooNearStartTime = 0;
-    dangerNear = false;
-  }
 
   // Get Firebase controlMode and manual relay state
   Firebase.RTDB.getString(&fbdo, firebasePath + "/mode", &controlMode);
@@ -243,8 +253,48 @@ void runSensorLogic() {
   Firebase.RTDB.setString(&fbdo, firebasePath + "/last_active", lastActiveTimestamp);
   Firebase.RTDB.setInt(&fbdo, firebasePath + "/awake_duration_sec", awakeDurationSec);
   Firebase.RTDB.setString(&fbdo, firebasePath + "/relay", relayStatus);
+  Firebase.RTDB.setFloat(&fbdo, firebasePath + "/distance_threshold", distanceThreshold);
 
   delay(3000);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClient client;
+    HTTPClient http;
+
+    String postUrl = serverName + "insert_data.php?id=101";
+    postUrl += "&temp=" + String(temp, 2);
+    postUrl += "&hum=" + String(hum, 2);
+    postUrl += "&dist=" + String(dist, 2);
+    postUrl += "&relay=" + relayStatus;
+    postUrl += "&motion=" + String(motion ? "YES" : "NO");
+    postUrl += "&vibrate=" + String(vibrate ? "YES" : "NO");
+
+    wakeStatus.replace(" ", "%20");
+    nearStatus.replace(" ", "%20");
+    controlMode.replace(" ", "%20");
+
+
+    postUrl += "&status=" + wakeStatus;
+    postUrl += "&safety=" + nearStatus;
+    postUrl += "&mode=" + controlMode;
+
+    Serial.println("Posting to MySQL: " + postUrl);
+    http.begin(client, postUrl.c_str());
+    http.setUserAgent("ESP32Client");
+    int code = http.GET();
+
+    if (code > 0) {
+      Serial.print("HTTP Response code: ");
+      Serial.println(code);
+      String payload = http.getString();
+      Serial.println(payload);
+    } else {
+      Serial.print("HTTP Error: ");
+      Serial.println(code);
+    }
+
+    http.end();
+  }
 }
 
 float readDistance() {

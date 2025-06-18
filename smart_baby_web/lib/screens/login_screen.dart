@@ -60,6 +60,12 @@ class _LoginScreenState extends State<LoginScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              const Text(
+                'Smart Baby Assistance System',
+                style: TextStyle(fontSize: 25, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 20),
+              const Text('Login', style: TextStyle(fontSize: 24)),
               Lottie.asset('assets/lottie/baby.json', height: 150),
               const SizedBox(height: 20),
               TextField(
